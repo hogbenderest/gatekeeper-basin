@@ -130,7 +130,49 @@ No KV, R2, or D1. `UserAccount` DO: credentials, connect nonces, staged reconnec
 audit) stays in Workshop storage, by design: the gatekeeper plugs into the OS
 capability system instead of building a parallel permission store.
 
+## 8.1 Per-user scoping for the ambient singleton (the enterprise mode)
+
+Auto-provision mode relocates consent from connect-time to admin-time, which creates a
+query-time enforcement obligation at the gatekeeper. `BASIN_SCOPE` alone discharges it
+with one deployment-wide decision; an enterprise with per-table governance needs a
+per-user one.
+
+- **Resolution.** `BASIN_USER_SCOPES` maps the provisioning user's verified email to
+  the scope of their ambient singleton: exact matches (case-insensitive), then suffix
+  patterns in declaration order, then an optional `default`. Unmatched users with no
+  default fail closed at singleton mint with operator guidance - a visible error beats
+  a silent over-grant. Scope specs share the `BASIN_SCOPE` grammar, and the resolved
+  scope is enforced by the same per-binding machinery: the facet carries it in props,
+  the plan verifier checks every query against it, and the observation log names it.
+- **Identity bridge.** Verified against upstream `bd10b0e`: `createAccount()` is
+  identity-blind by contract, ambient facet props are entirely the gatekeeper's own
+  mint, and the only identity-carrying surface in the whole contract is
+  `getSupportedResources(options.userId)`, which upstream itself calls a temporary
+  hack. There is also no group-claims source anywhere in the platform. So the fork
+  ships `patches/workshop-note-provisioned-owner.patch` (generated from, and verified
+  against, the pinned upstream commit): at auto-provisioning, the Workshop records the
+  provisioning user's verified email (`profile.id` on the user DO) on accounts whose
+  description declares `receivesProvisionedOwner`. The account stores it write-once in
+  a `BasinOwnerRecord` DO keyed deterministically from the account id - whoever could
+  rewrite the owner could rewrite the scope it resolves to, so it is immutable once
+  set. Gatekeepers that do not declare the flag are untouched; an unpatched Workshop
+  ignores it (the method simply is never called, and `BASIN_USER_SCOPES` unset keeps
+  the old behaviour).
+- **What this is upstream-shaped about.** The contract addition is one optional flag
+  on `AccountDescription` plus one optional method on `GatekeeperUser`, gated on the
+  declared flag per the platform's own optional-method convention. It exposes the
+  platform gap with a consuming implementation rather than proposing an abstract
+  capability. The proposal is drafted in
+  `docs/upstream-issue-per-user-scoping.md`.
+- **Re-provisioning.** Accounts provisioned before the patch carry no owner record;
+  with the map set they fail closed with guidance (disable/re-enable the connector or
+  revoke the account), rather than silently falling back to the deployment-wide scope.
+- **Budget topology note.** Facets are per workspace (children of each user's
+  overseer), so per-user scopes also mean per-user facet instances: the per-binding
+  budget and catalog caches stay separated per user's workspace, as before.
+
 ## 8. Conformance and divergence from the write-gatekeeper skill
+
 
 Follows: three-tier architecture, `types.d.ts` as the agent's sole documentation
 (self-contained, lint-enforced upstream), STOP-for-API-review (held with the operator,

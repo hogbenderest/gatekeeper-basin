@@ -57,6 +57,8 @@ import {
 } from "./catalog.js";
 import { Budget, budgetCapMb, kvBudgetStore } from "./budget.js";
 import { analysisText, defaultRowLimit, maxRowLimit, sanitizeSql } from "./guardrails.js";
+import { parseDeploymentScope } from "./scope-map.js";
+import { parseUserScopeMap, resolveUserScope } from "./user-scopes.js";
 import {
   checkExplainPlan,
   explainSubject,
@@ -211,16 +213,7 @@ function readConfig(env: Cloudflare.Env): GatekeeperConfig {
 }
 
 /** Deployment BASIN_SCOPE var: "bucket" (default), "namespace:<ns>", "table:<ns>/<table>". */
-export function parseDeploymentScope(raw: string | undefined): BasinScope {
-  if (!raw || raw === "bucket") return { kind: "bucket" };
-  const nsMatch = raw.match(/^namespace:([A-Za-z_]\w*)$/);
-  if (nsMatch) return { kind: "namespace", namespace: nsMatch[1] };
-  const tableMatch = raw.match(/^table:([A-Za-z_]\w*)\/([A-Za-z_]\w*)$/);
-  if (tableMatch) return { kind: "table", namespace: tableMatch[1], table: tableMatch[2] };
-  throw new Error(
-    'BASIN_SCOPE must be "bucket", "namespace:<ns>", or "table:<ns>/<table>".',
-  );
-}
+export { parseDeploymentScope } from "./scope-map.js";
 
 function scopeLabel(scope: BasinScope): string {
   if (scope.kind === "bucket") return "the whole warehouse";
@@ -718,6 +711,12 @@ export interface BasinGatekeeperProps {
   /** UserAccount DO id, user mode only. */
   userObjectId?: string;
   scope: BasinScope;
+  /**
+   * The provisioning user's verified email, deployment mode with per-user scopes: the
+   * identity BASIN_USER_SCOPES was resolved against. Carried for audit and session
+   * context, never re-resolved (the resolved scope is authoritative).
+   */
+  ownerEmail?: string;
 }
 
 @validateRpc()
@@ -1231,31 +1230,125 @@ class BasinConfiguratorRpcImpl extends RpcTarget {
 }
 
 // ---------------------------------------------------------------------------
+// Owner record (per-user identity for auto-provisioned accounts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Stores the provisioning user's verified email for one auto-provisioned account, so
+ * the account can resolve per-user scopes even though WorkerEntrypoints carry no
+ * durable state of their own. Keyed deterministically from the account's id; the
+ * record is write-once (an attempt to change a recorded owner is refused), because
+ * whoever could rewrite the owner could rewrite the scope it resolves to.
+ */
+@validateRpc()
+export class BasinOwnerRecord extends DurableObject<Cloudflare.Env> {
+  async put(email: string): Promise<void> {
+    const existing = this.ctx.storage.kv.get<string>("ownerEmail");
+    if (existing !== undefined && existing !== email) {
+      throw new Error("This account's provisioning owner is already recorded and cannot be changed.");
+    }
+    this.ctx.storage.kv.put("ownerEmail", email);
+  }
+
+  async get(): Promise<string | null> {
+    return this.ctx.storage.kv.get<string>("ownerEmail") ?? null;
+  }
+}
+
+/** Deterministic DO id for one account's owner record: sha256("basin-owner:<accountId>"). */
+async function ownerRecordId(namespace: DurableObjectNamespace, accountId: string): Promise<DurableObjectId> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`basin-owner:${accountId}`),
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return namespace.idFromString(hex);
+}
+
+// ---------------------------------------------------------------------------
 // Auto-provision account (deployment mode)
 // ---------------------------------------------------------------------------
+
+/** Marks this vendor as one whose accounts accept the provisioning owner's identity. */
+export type OwnerReceivingAccountDescription = AccountDescription & {
+  receivesProvisionedOwner: true;
+};
 
 @validateRpc()
 export class BasinAutoAccount
   extends WorkerEntrypoint<Cloudflare.Env, { accountId: string }>
   implements GatekeeperUser
 {
-  async describe(): Promise<AccountDescription> {
+  async describe(): Promise<OwnerReceivingAccountDescription> {
     return {
       displayName: "Cloudflare Basin",
       avatar: BASIN_ICON,
       singleton: { tsType: "BasinSession" },
+      // Consumed by a Workshop that supports per-user provisioning identity (see
+      // patches/workshop-note-provisioned-owner.patch and the upstream proposal in
+      // docs/upstream-issue-per-user-scoping.md); ignored by an unpatched Workshop.
+      receivesProvisionedOwner: true,
     };
+  }
+
+  #ownerRecord(): Promise<DurableObjectStub<BasinOwnerRecord>> {
+    return ownerRecordId(this.ctx.exports.BasinOwnerRecord, this.ctx.props.accountId)
+      .then((id) => this.ctx.exports.BasinOwnerRecord.get(id));
+  }
+
+  /**
+   * Records the provisioning user's verified email. Called by the Workshop at
+   * auto-provisioning time (the gatekeeper cannot learn it otherwise: the platform
+   * passes no user identity to auto-provisioned accounts). Write-once: a recorded
+   * owner can only be re-noted with the same email.
+   */
+  async noteProvisionedOwner(owner: { email: string }): Promise<void> {
+    const email = owner.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+$/.test(email)) {
+      throw new Error("The provisioning owner must be an email address.");
+    }
+    await (await this.#ownerRecord()).put(email);
+  }
+
+  /**
+   * Resolve this user's ambient scope. With BASIN_USER_SCOPES set, the per-user map
+   * decides (fail-closed for unmapped users without a default); without it, the
+   * deployment-wide BASIN_SCOPE applies to everyone, as before.
+   */
+  async #resolveScope(): Promise<{ scope: BasinScope; ownerEmail: string | null }> {
+    if (!this.env.BASIN_USER_SCOPES) {
+      return { scope: parseDeploymentScope(this.env.BASIN_SCOPE), ownerEmail: null };
+    }
+    const parsed = parseUserScopeMap(this.env.BASIN_USER_SCOPES);
+    if (!parsed.ok) throw new Error(parsed.error);
+    const ownerEmail = await (await this.#ownerRecord()).get();
+    if (!ownerEmail) {
+      throw new Error(
+        "BASIN_USER_SCOPES is set but this account's provisioning owner is unknown " +
+          "(the account predates the owner-identity patch, or the Workshop does not " +
+          "support it). Re-provision the account: disable and re-enable the Basin " +
+          "connector, or revoke the account, so the Workshop records the owner. " +
+          "Failing closed rather than granting the deployment-wide scope.",
+      );
+    }
+    const resolved = resolveUserScope(ownerEmail, parsed.map);
+    if (!resolved.ok) throw new Error(resolved.error);
+    logger.info("resolved per-user Basin scope", {
+      event: "basin.scope.user.resolved",
+      matched: resolved.matched,
+    });
+    return { scope: resolved.scope, ownerEmail };
   }
 
   async getSingletonGatekeeperClass(): Promise<DurableObjectClass<Gatekeeper<any>>> {
     if (!this.env.BASIN_SQL_TOKEN) {
       throw new Error("The Basin gatekeeper is not configured for auto-provisioning.");
     }
+    const { scope, ownerEmail } = await this.#resolveScope();
     return this.ctx.exports.BasinGatekeeper({
-      props: {
-        mode: "deployment",
-        scope: parseDeploymentScope(this.env.BASIN_SCOPE),
-      },
+      props: { mode: "deployment", scope, ...(ownerEmail ? { ownerEmail } : {}) },
     });
   }
 

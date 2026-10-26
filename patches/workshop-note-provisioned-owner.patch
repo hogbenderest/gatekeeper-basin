@@ -1,0 +1,24 @@
+diff --git a/packages/workshop-backend/src/user.ts b/packages/workshop-backend/src/user.ts
+index 429f510..0fa200d 100644
+--- a/packages/workshop-backend/src/user.ts
++++ b/packages/workshop-backend/src/user.ts
+@@ -1447,6 +1447,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
+     let account = await (vendor as unknown as AccountCreatorStub).createAccount();
+     // Resolve the description before allocating the id, so a describe() failure doesn't burn a slot.
+     let description = await account.describe();
++    // gatekeeper-basin fork patch: pass the provisioning owner's identity to accounts
++    // that ask for it (AccountDescription.receivesProvisionedOwner), so per-user scoped
++    // ambient gatekeepers (e.g. a data-lake query gateway with per-table governance) can
++    // narrow each user's grant. Upstream proposal: the per-user-scoping issue drafted in
++    // the gatekeeper-basin repository (docs/upstream-issue-per-user-scoping.md).
++    if ((description as { receivesProvisionedOwner?: true }).receivesProvisionedOwner === true) {
++      let profile = this.storage.profile.get();
++      if (profile) {
++        await (account as unknown as {
++          noteProvisionedOwner(owner: { email: string }): Promise<void>;
++        }).noteProvisionedOwner({ email: profile.id });
++      }
++    }
+     let accountId = this.storage.nextAccountId.get();
+     this.storage.nextAccountId.put(accountId + 1);
+     this.storage.connectedAccounts.put({

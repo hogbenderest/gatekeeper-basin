@@ -123,6 +123,46 @@ this gatekeeper alone. All users of the deployment share the underlying credenti
 observation log still attributes every query to the individual user, and each
 workspace's budget counter is its own.
 
+#### Per-user scoping (enterprise mode)
+
+`BASIN_SCOPE` gives every user the same grant. An enterprise that needs per-table
+governance on the shared credential instead sets `BASIN_USER_SCOPES` (JSON var):
+
+```json
+{
+  "exact": { "ian@corp.example": "bucket" },
+  "patterns": [
+    { "pattern": "*@finance.example.com", "scope": "namespace:finance" },
+    { "pattern": "*@corp.example", "scope": "namespace:public" }
+  ],
+  "default": "namespace:public"
+}
+```
+
+Each user's ambient singleton is then minted with *their* scope: exact email matches
+win (case-insensitive), then suffix patterns in order, then `default`. Unmatched users
+with no `default` get no warehouse at all - a clear provisioning-time error rather than
+a silent over-grant. The plan verifier enforces the resolved scope per user, per
+query, with the same audit trail; this is the query-gateway governance pattern (the
+Trino-plus-Ranger shape) running entirely inside the gatekeeper.
+
+Two prerequisites:
+
+- **Identity plumbing.** The platform does not pass user identity to auto-provisioned
+  accounts (`createAccount()` is identity-blind by contract). Apply
+  `patches/workshop-note-provisioned-owner.patch` to your `cloudflare-os` checkout
+  (verified against commit `bd10b0e`): it makes the Workshop record the provisioning
+  user's verified email on accounts that declare `receivesProvisionedOwner`. The patch
+  is one small, additive hunk; the upstream-shaped proposal it demonstrates is drafted
+  in `docs/upstream-issue-per-user-scoping.md`.
+- **Account re-provisioning after enabling the map.** Accounts provisioned before the
+  patch have no recorded owner; with `BASIN_USER_SCOPES` set those accounts fail closed
+  at singleton mint with re-provisioning guidance (disable and re-enable the connector,
+  or revoke the account).
+
+With `BASIN_USER_SCOPES` unset, nothing changes: `BASIN_SCOPE` applies to everyone as
+before.
+
 ### Tunables (both modes)
 
 | Var | Default | Meaning |
@@ -133,6 +173,7 @@ workspace's budget counter is its own.
 | `BASIN_CATALOG_TTL_MS` | `3600000` | schema discovery cache TTL |
 | `BASIN_DESCRIBE_CAP` | `100` | tables with inline column detail in `getCatalog()` |
 | `BASIN_NOTES` | unset | JSON array of strings: deployment notes appended to the catalog |
+| `BASIN_USER_SCOPES` | unset | per-user scope map for the ambient singleton (see above); when set, unmapped users fail closed |
 
 ## Installation
 

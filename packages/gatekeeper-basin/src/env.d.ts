@@ -25,6 +25,16 @@ declare namespace Cloudflare {
      */
     BASIN_SCOPE?: string;
 
+    /**
+     * Optional BASIN_USER_SCOPES (JSON object): maps the provisioning user's verified
+     * email to their ambient singleton's scope, for per-user governance on the shared
+     * deployment credential. Keys: "exact" (email -> scope), "patterns" (array of
+     * {pattern, scope}, single leading "*" suffix match), "default" (scope for
+     * unmatched users). Scope grammar is the BASIN_SCOPE one: "bucket",
+     * "namespace:<ns>", "table:<ns>/<table>". When set, unmapped users fail closed.
+     */
+    BASIN_USER_SCOPES?: string;
+
     // ---- Tunables (both modes) ----
     /** Daily scan budget per binding, in MB of compressed bytes scanned. Default 2048. */
     BASIN_DAILY_SCAN_MB?: string;

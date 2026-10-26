@@ -29,9 +29,11 @@ export const wrangler = {
 
 /**
  * BasinGatekeeper is instantiated as an Overseer facet per binding (per workspace/resource
- * grant); UserAccount exists per connected account in per-user mode. Both are reached through
- * ctx.exports; no bindings are required.
+ * grant); UserAccount exists per connected account in per-user mode; BasinOwnerRecord
+ * stores the provisioning owner's email per auto-provisioned account. All are reached
+ * through ctx.exports; no bindings are required.
  */
 export const migrations: DurableObjectMigration[] = [
   { tag: "v0", new_sqlite_classes: ["BasinGatekeeper", "UserAccount"] },
+  { tag: "v1", new_sqlite_classes: ["BasinOwnerRecord"] },
 ];
