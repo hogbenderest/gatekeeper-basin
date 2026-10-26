@@ -74,12 +74,20 @@ the engine's own errors are forwarded so the agent can correct itself.
 ### Prerequisite: the token recipe
 
 Basin SQL authenticates with an R2 API token. **Today, even read-only queries require
-R2 Storage Admin Read & Write**, an open-beta limitation: that credential can read
-every catalog in the account, which is exactly why it must live only in this
-gatekeeper's Worker secret and never in a gadget. Create one at
-[API tokens](https://dash.cloudflare.com/profile/api-tokens) with the R2 permission
-group "R2 Storage Admin Read & Write" (or add "Basin SQL Read" explicitly where
-available), scoped to the account that owns the warehouse bucket.
+the R2 "Admin Read & Write" permission**, an open-beta limitation: that credential can
+read every catalog in the account, which is exactly why it must live only in this
+gatekeeper's Worker secret and never in a gadget. Create it from the **R2 API tokens
+flow**, not the generic API-tokens builder: dashboard → Storage & Databases → R2 →
+Overview → (Account Details) Manage API tokens → Create API token → permission
+**Admin Read & Write**, then Create User API Token (or Account API token). Scoped to
+the account that owns the warehouse bucket.
+
+Do **not** use the generic builder at
+[My Profile → API Tokens](https://dash.cloudflare.com/profile/api-tokens): its
+"Workers R2 Storage" Read/Write groups are S3-object-level permissions and leave
+Basin SQL answering `80013 Unauthorized` (HTTP 403) on every query, including
+`SELECT 1`. That is an authorization-layer rejection, not the enforcement the
+probes below test for.
 
 Before wiring the token anywhere, run the two mandatory probes against your warehouse:
 
@@ -95,6 +103,13 @@ curl -s "https://api.sql.cloudflarestorage.com/api/v1/accounts/$ACCOUNT/basin-sq
 
 If either succeeds, your engine accepts writes or stacked statements: do not install
 this token; report the result upstream and re-probe after the platform changes.
+
+The passing shape, verified against a live warehouse (2026-10-26): each probe is
+rejected with a **query-level** error (HTTP 400, code 40003) - `"invalid SQL:
+only read-only queries are allowed"` and `"invalid SQL: expected a single SQL
+statement, got 2 instead"`. If instead both probes return `80013 Unauthorized`
+(HTTP 401/403), the token itself is not accepted for Basin SQL: wrong token
+type or permissions (see above) - fix the token, then re-probe.
 
 ### Mode 1: per-user connect (default)
 
