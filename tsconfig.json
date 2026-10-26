@@ -1,0 +1,26 @@
+// Base compiler options for this repository's own code. The Worker packages' tsconfigs extend the
+// submodule's root config instead, so upstream stays the single source of truth for the settings a
+// Worker package needs; this file exists for `packages/cf-os`, the Node CLI, which extends it.
+//
+// `singleThreaded` is deliberately absent: it is a TypeScript 7 option, and unlike the submodule's
+// root config nothing here type-checks capnweb's recursive type graphs, so the parallel default is
+// fine.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "allowJs": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": [],
+  "exclude": ["node_modules", "dist", "cloudflare-os"]
+}

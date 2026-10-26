@@ -1,0 +1,27 @@
+{
+  "name": "gatekeeper-basin-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "scripts": {
+    "submodule:install": "pnpm --dir cloudflare-os install",
+    "build": "pnpm run submodule:install && vp run --filter \"!gatekeeper-basin-workspace\" --cache build",
+    "test": "pnpm run submodule:install && vp run --filter \"!gatekeeper-basin-workspace\" --cache test",
+    "test:run": "pnpm --filter @gadgets/gatekeeper-basin test:run",
+    "types:check": "pnpm --filter @gadgets/gatekeeper-basin types:check",
+    "lint:check": "vp lint",
+    "lint:fix": "vp lint --fix",
+    "lint": "pnpm run lint:check && pnpm run build"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@types/node": "26.1.0",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

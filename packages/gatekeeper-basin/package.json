@@ -1,0 +1,33 @@
+{
+  "name": "@gadgets/gatekeeper-basin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/worker.ts",
+  "description": "Cloudflare OS gatekeeper for querying a Cloudflare Basin (Iceberg on R2) warehouse through governed, scope-checked SQL.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "echo \"run 'pnpm dev-server' in the cloudflare-os workspace instead\" >&2 && exit 1",
+    "deploy": "vp run --no-cache build:configurator && wrangler deploy",
+    "clean": "rm -rf dist src/generated",
+    "types:check": "tsc --noEmit",
+    "test:run": "vitest run"
+  },
+  "dependencies": {
+    "@gadgets/configurator-ui": "link:../../cloudflare-os/packages/configurator-ui",
+    "@gadgets/gatekeeper-kit": "link:../../cloudflare-os/packages/gatekeeper-kit",
+    "@gadgets/observability": "link:../../cloudflare-os/packages/observability",
+    "@gadgets/workshop-shared": "link:../../cloudflare-os/packages/workshop-shared",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@gadgets/scripts": "link:../../cloudflare-os/scripts",
+    "@types/node": "26.1.0",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

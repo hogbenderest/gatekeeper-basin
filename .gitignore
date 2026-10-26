@@ -1,0 +1,8 @@
+# The vendored upstream checkout (scripts/dev-setup.sh clones it at the pinned commit).
+cloudflare-os/
+node_modules/
+packages/*/dist/
+packages/*/.wrangler/
+packages/*/src/generated/
+*.tsbuildinfo
+.DS_Store

@@ -1,0 +1,77 @@
+packages:
+  - packages/*
+  # Nothing under `cloudflare-os/`: this repository's packages `link:` to the submodule's, whose
+  # dependencies come from cloudflare-os/pnpm-lock.yaml (`cf-os install`). Neither this
+  # lockfile nor the catalog below governs them, and this root's `vp` has none of their tasks.
+
+# The toolchain versions this repository's own packages share. Declared once here so a bump is one
+# edit rather than a hand edit of every package.json.
+#
+# Only three entries actually have to agree with cloudflare-os/pnpm-workspace.yaml: capnweb,
+# typescript and @cloudflare/workers-types, the ones whose types cross the `link:` boundary. Each
+# install has its own capnweb copy whatever the version; only types cross the link today, so
+# keeping the ranges in step keeps those types compatible, and keeps the copies from diverging if
+# runtime code ever crosses (a stub minted by one copy is unserialisable by the other's session:
+# `TypeError: Cannot serialize value: [object RpcStub]`). A differing workers-types or typescript
+# makes the submodule's declarations fail to match this side's. Keep those three in step by hand
+# when bumping the gitlink. The rest follow upstream for convenience.
+catalog:
+  # Exact, matching upstream's lock. The overrides below set its miniflare and wrangler anyway.
+  '@cloudflare/vitest-plugin': 1.4.3
+  '@cloudflare/workers-types': ^5.20261001.1
+  capnweb: ^0.12.0
+  # Exact: pinned in lockstep with capnweb (declared as a >=0.7.0 peer)
+  capnweb-validate: 0.3.0
+  # Exact: a prerelease, kept in step with the Wrangler/workerd stack the test pool runs on.
+  miniflare: 5.20261001.0-alpha
+  # Exact: TypeScript 7 (tsgo). The submodule's tsconfig sets `singleThreaded`, which TS 5.9
+  # rejects outright, so every package extending it has to be on 7.x. Nothing here uses the JS
+  # compiler API, so the submodule's `typescript6` alias is not needed.
+  typescript: 7.0.2
+  # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
+  # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
+  vite: 7.3.6
+  vite-plus: ^1.2.0
+  vitest: ^5.0.5
+  # Exact: in lockstep with the miniflare entry above. Wrangler pins its own miniflare, so a
+  # newer one would bring a second miniflare/workerd stack alongside the test pool's.
+  wrangler: 4.147.0
+
+overrides:
+  # Keep the test pool's Wrangler/Miniflare/workerd stack aligned with the workspace toolchain.
+  '@cloudflare/vitest-plugin>miniflare': "catalog:"
+  '@cloudflare/vitest-plugin>wrangler': "catalog:"
+  # Vitest peers can resolve vite@latest, so the version is pinned rather than ranged. Points at the
+  # catalog so this and the manifests can't disagree: a catalog only covers what a workspace
+  # manifest declares itself, and the override is what reaches vite as somebody else's peer.
+  # Selected by range, not bare `vite`: vite-plus 1.0 depends on `vite` as an alias for
+  # `npm:@voidzero-dev/vite-plus-core`, which a semver selector does not match, so `vp` keeps the
+  # core it was built against instead of having vite 7 substituted under it.
+  vite@*: "catalog:"
+  # Arrives as an optional vite/vitest peer resolved to `latest`; pinned to the same release the
+  # submodule pins so the two installs agree.
+  '@types/node': 26.1.0
+
+# Otherwise a root install whose own lockfile is unchanged -- which is what a gitlink bump looks
+# like from here -- is "Already up to date" and runs no lifecycle script, so the postinstall that
+# installs the submodule's workspace would be skipped.
+optimisticRepeatInstall: false
+
+# Reject dependency versions published within this many minutes (24h), matching upstream's
+# supply-chain policy.
+minimumReleaseAge: 1440
+
+minimumReleaseAgeExclude:
+  - capnweb
+  - capnweb-validate
+  - workerd
+  - "@cloudflare/workerd-*"
+  - cf
+
+allowBuilds:
+  '@google/genai': true
+  core-js-pure: true
+  esbuild: true
+  protobufjs: true
+  sharp: true
+  workerd: true
