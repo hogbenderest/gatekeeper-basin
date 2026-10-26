@@ -15,8 +15,9 @@ jobs:
       fail-fast: false
       matrix:
         # The pin is the compatibility contract: bd10b0e is the commit this package
-        # is developed and tested against. The "drift" leg only type-checks, so a
-        # broken main build is visible without masking the pinned leg.
+        # is developed and tested against. The drift leg only installs, generates and
+        # type-checks, so a broken upstream main is visible without masking the
+        # pinned leg.
         include:
           - pin: bd10b0ece6842b8f486b3467eab6cc3b9c920920
             label: pinned
@@ -34,16 +35,11 @@ jobs:
         with:
           node-version: 24.19.0
           cache: pnpm
-      - name: Clone cloudflare-os at ${{ matrix.label }}
-        run: git clone --depth 1 --branch ${{ matrix.pin == 'main' && 'main' || matrix.pin }} https://github.com/cloudflare/cloudflare-os.git cloudflare-os
-        # depth-1 with a sha pin needs the sha to be a branch head; fall back to full fetch for pins
-      - name: Fetch exact pin if needed
-        if: matrix.pin != 'main'
+      - name: Clone cloudflare-os
         run: |
-          if ! git -C cloudflare-os rev-parse HEAD | grep -q "^${{ matrix.pin }}"; then
-            git -C cloudflare-os fetch --depth 1 origin ${{ matrix.pin }}
-            git -C cloudflare-os checkout ${{ matrix.pin }}
-          fi
+          git clone https://github.com/cloudflare/cloudflare-os.git cloudflare-os
+          git -C cloudflare-os fetch --depth 1 origin ${{ matrix.pin }}
+          git -C cloudflare-os checkout ${{ matrix.pin }}
       - name: Install upstream workspace
         run: pnpm --dir cloudflare-os install
       - name: Install this workspace
@@ -51,21 +47,9 @@ jobs:
       - name: Build configurator frames
         run: pnpm exec vp run -F @gadgets/gatekeeper-basin build:configurator
       - name: Generate wrangler.jsonc with the upstream generator
-        run: |
-          cat > /tmp/gen-config.mjs <<'EOF'
-          import { renderWorkerConfig } from "./cloudflare-os/scripts/generate-worker-configs.ts";
-          import { writeFileSync } from "node:fs";
-          const dir = new URL("./packages/gatekeeper-basin/", import.meta.url).pathname;
-          writeFileSync(`${dir}wrangler.jsonc`, await renderWorkerConfig(dir));
-          EOF
-          node --experimental-strip-types /tmp/gen-config.mjs
+        run: node --experimental-strip-types scripts/generate-configs.mjs
       - name: Generate worker types against the real source
-        run: |
-          cd packages/gatekeeper-basin
-          sed 's#"main": ".wrangler/validate/src/worker.ts"#"main": "src/worker.ts"#' wrangler.jsonc > /tmp/w.jsonc
-          cp /tmp/w.jsonc wrangler.jsonc
-          ../../node_modules/.bin/wrangler types
-          git checkout -- ../../packages/gatekeeper-basin/wrangler.jsonc 2>/dev/null || true
+        run: bash scripts/generate-worker-types.sh
       - name: Type check
         run: pnpm types:check
       - name: Test

@@ -34,27 +34,14 @@ pnpm --dir cloudflare-os install
 echo "Installing this repository's workspace..."
 pnpm install
 
-echo "Generating the configurator frames..."
+echo "Building configurator frames..."
 pnpm exec vp run -F @gadgets/gatekeeper-basin build:configurator
 
 echo "Generating wrangler.jsonc with the upstream generator..."
-cat > /tmp/gen-config.mjs <<EOF
-import { renderWorkerConfig } from "./cloudflare-os/scripts/generate-worker-configs.ts";
-import { writeFileSync } from "node:fs";
-const dir = new URL("./packages/gatekeeper-basin/", import.meta.url).pathname;
-writeFileSync(\`\${dir}wrangler.jsonc\`, await renderWorkerConfig(dir));
-EOF
-node --experimental-strip-types /tmp/gen-config.mjs
+node --experimental-strip-types scripts/generate-configs.mjs
 
 echo "Generating worker types against the real source..."
-(
-  cd packages/gatekeeper-basin
-  sed 's#"main": ".wrangler/validate/src/worker.ts"#"main": "src/worker.ts"#' wrangler.jsonc > /tmp/w.jsonc
-  cp /tmp/w.jsonc wrangler.jsonc
-  ../../node_modules/.bin/wrangler types
-)
-# Restore the build-main wrangler.jsonc the generator produced.
-node --experimental-strip-types /tmp/gen-config.mjs
+bash scripts/generate-worker-types.sh
 
 echo
 echo "Done. Checks:"
