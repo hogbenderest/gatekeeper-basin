@@ -44,7 +44,7 @@ jobs:
         run: pnpm --dir cloudflare-os install
       - name: Install this workspace
         run: pnpm install
-      - name: Build configurator frames (never cached: deploys must never replay a built artifact)
+      - name: Build configurator frames (never cached; deploys must never replay a built artifact)
         run: pnpm exec vp run -F @gadgets/gatekeeper-basin --no-cache build:configurator
       - name: Assert configurator frames exist and are non-empty
         run: |
