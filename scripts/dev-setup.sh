@@ -35,7 +35,7 @@ echo "Installing this repository's workspace..."
 pnpm install
 
 echo "Building configurator frames..."
-pnpm exec vp run -F @gadgets/gatekeeper-basin build:configurator
+pnpm exec vp run -F @gadgets/gatekeeper-basin --no-cache build:configurator
 
 echo "Generating wrangler.jsonc with the upstream generator..."
 node --experimental-strip-types scripts/generate-configs.mjs

@@ -58,16 +58,31 @@ ingest semantics.
   narrow bindings; `SHOW` / `DESCRIBE` obey the same boundary.
 - **Budget.** Each binding has a daily compressed-bytes-scanned cap (default 2048 MB,
   `BASIN_DAILY_SCAN_MB`), counted per binding per workspace in Durable Object storage.
+  Billed queries **reserve** against the cap before they execute
+  (`BASIN_RESERVE_MB`, default 10, the documented per-query minimum) and settle with
+  the engine-reported actual afterwards; the reservation stands if the scan was
+  smaller. This bounds the concurrent overshoot to the reservation, so a fan of
+  parallel agent queries cannot spend past the cap unchecked. A query whose actual
+  scan exceeds the whole remaining cap still executes once (no estimate can know
+  the cost of a scan before running it) - the bound is on *concurrency*, not on a
+  single first query.
 - **Audit.** Every data crossing to the agent is an observation in the Workshop's
-  approval log: the SQL, the scope, the row count, and the bytes scanned.
+  approval log: the SQL, the scope, the row count, and the bytes scanned. Failed
+  billed queries are observed too (marked restricted), because engine error text can
+  carry warehouse-derived content; and the agent-facing error text itself is
+  sanitized: provider messages never forward verbatim, only the mapped,
+  value-free guidance (the raw text stays in Worker logs, which do not cross RPC).
 - **Private by default.** Observations are marked `containsRestrictedData`, and the
   observer strategy is A (private-only): a gadget that reads warehouse data cannot be
   shared with anyone. Data cannot leak sideways into a shared workspace's actions or
   web fetches either.
 
-**Documented residual risk:** a failed query's error text can confirm the existence of
-a named object (one bit per guess). Scope-rejected queries return a normalized reason;
-the engine's own errors are forwarded so the agent can correct itself.
+**Documented residual risk:** error text can still confirm the existence of a named
+object through *differentiated mapped codes* (one bit per guess), which upstream's own
+observer guidance accepts for existence probing. The raw provider message no longer
+crosses to agents at all; scope-rejected queries return a normalized reason, and
+`basin://` URLs with empty path segments are refused outright (they are labelled
+narrower by the Workshop's URL resolution than the gatekeeper could ever enforce).
 
 ## Setup
 
@@ -182,10 +197,12 @@ before.
 
 | Var | Default | Meaning |
 |---|---|---|
+| `BASE_URL` | unset | The gatekeeper's public path (e.g. `https://<host>/gatekeeper/basin`). Required for per-user connect: the release manifest sets it, and connect flows refuse to mint URLs against the localhost fallback |
 | `BASIN_DAILY_SCAN_MB` | `2048` | per-binding daily scan budget |
+| `BASIN_RESERVE_MB` | `10` | bytes reserved per billed query before execution (reserve-then-settle, bounding concurrent overshoot; a query that scans less keeps its reservation) |
 | `BASIN_MAX_ROWS` | `500` | rows returned per page |
 | `BASIN_QUERY_TIMEOUT_MS` | `30000` | query abort timeout |
-| `BASIN_CATALOG_TTL_MS` | `3600000` | schema discovery cache TTL |
+| `BASIN_CATALOG_TTL_MS` | `3600000` | schema discovery cache TTL (per scope) |
 | `BASIN_DESCRIBE_CAP` | `100` | tables with inline column detail in `getCatalog()` |
 | `BASIN_NOTES` | unset | JSON array of strings: deployment notes appended to the catalog |
 | `BASIN_USER_SCOPES` | unset | per-user scope map for the ambient singleton (see above); when set, unmapped users fail closed |
@@ -228,6 +245,11 @@ pnpm test:run                     # pure-logic suites (Node)
 pnpm types:check                   # tsc against the upstream contracts
 cd packages/gatekeeper-basin && ../../node_modules/.bin/wrangler deploy --dry-run
 ```
+
+Deploy with the package's `pnpm deploy` (which regenerates the configurator frames
+uncached first); a plain `wrangler deploy` is not a supported path - it never
+regenerates the frames, so it ships them stale (a tree missing frames fails the
+bundle, which is at least loud).
 
 The pinned commit and the compatibility note above update together, in one change.
 CI (`.github/workflows/ci.yml`) vendors the package into that exact checkout, plus a

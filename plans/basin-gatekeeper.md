@@ -188,7 +188,49 @@ to the Cloudflare API surface, not a data-access gatekeeper), and the lexical la
 refuses delimited identifiers rather than parsing them (refusal is the only sound
 claim a small analyzer can make).
 
-## 9. Open items
+## 10. Security-audit remediations (run 1, 2026-10-27)
+
+The first full audit (hunter/validation/verifier pipeline against `aaf670a`; artifacts
+in the operator's `security-audit-skill/gatekeeper-basin/run-1/`) confirmed the core and
+found its gaps at the seams. The remediations, all landed 2026-10-27:
+
+- **Budget became reserve-then-settle** (audit finding 1, the one medium): `assertAndReserve`
+  claims `BASIN_RESERVE_MB` (default 10, the documented per-query minimum) before the
+  outbound fetch, and the settle adds `actual - estimate` (non-positive deltas ignored, so
+  a smaller scan keeps its reservation) - the same bound as gatekeeper-x's
+  `reserveReads`/`settleReads`. Free statements (EXPLAIN/SHOW/DESCRIBE) reserve nothing.
+- **Provider error text no longer crosses to agents** (finding 4): `mapProviderError`
+  returns mapped, value-free guidance only; the raw message stays on
+  `BasinSqlError.providerMessage` for Worker logs (capnweb serializes name/message/stack,
+  not properties). Failed *billed* queries now authorize a `containsRestrictedData`
+  observation before the error is released, so the workspace latch reflects the engine
+  crossing that happened; a blocked observation propagates and the error does not cross.
+- **`EXPLAIN (ANALYZE)` is refused in both spellings** (finding 3): the refusal regex
+  covers parenthesized option lists, and the corpus pins analyze-prefixed identifiers
+  still passing.
+- **`basin://` URLs refuse empty path segments** (finding 2): the Workshop's URLPattern
+  resolution labels `.../b//` as a namespace while a segment-dropping parse enforced
+  bucket scope; the gatekeeper now tolerates exactly one trailing slash (matching the
+  Workshop's toggle) and refuses every other empty segment, so the consent label can
+  never disagree with the enforcement in the widening direction. The parser moved to
+  `src/resource-url.ts` (pure) with a Node corpus pinning the differential.
+- **The catalog cache is scope-keyed** (finding 8) and **out-of-grammar object names are
+  skipped, not fatal** (finding 7): discovery filters names through the identifier
+  grammar, `buildCatalog` guards defensively, and the platform notes document the
+  omission. One hyphenated table name can no longer reject `getCatalog()` for a binding.
+- **Ops**: the types script uses mktemp + a trap (corruption on abort/overlap and the
+  predictable `/tmp` path both closed); `BASE_URL` is documented and connect/reconnect
+  refuse to mint against the localhost default; dev-setup and CI regenerate configurator
+  frames uncached with a frame-count assertion; vite bumped to 7.3.7 (5 dev-server
+  advisories closed); the form placeholder and test fixtures use a synthetic account ID.
+
+Remaining accepted residuals and open items: the differentiated-mapped-codes existence
+oracle (documented above), the two live engine probes (EXPLAIN (ANALYZE) acceptance;
+error-value echo) which the sanitized error text now bounds either way, and the workerd
+suite as the next quality milestone - the reservation and failure-observation logic
+added by these fixes is exactly the stateful layer it should cover.
+
+## 11. Open items (pre-existing)
 
 - Workerd suite: fake-provider tests for the DOs and sessions (TestHooks harness,
   the `gatekeeper-cloudflare` pattern), including the full pipeline against mocked

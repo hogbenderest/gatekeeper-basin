@@ -33,6 +33,7 @@ export const PLATFORM_NOTES: string[] = [
   "A single query is capped at 5000 Iceberg manifests (error 40020). Multi-table UNIONs can exceed the cap: batch small, or query per table.",
   "date_trunc, QUALIFY ROW_NUMBER() OVER (PARTITION BY ...), approx_distinct, ILIKE, TRY_CAST and regexp_replace are supported.",
   "Every SELECT must reference at least one table (no bare SELECT of literals).",
+  "Warehouse objects whose names fall outside [A-Za-z_][A-Za-z0-9_]* (hyphens, dots, digits first) are omitted from the catalog and cannot be queried through this session: the guardrails never quote identifiers, so such names cannot be embedded safely.",
   "The engine's default LIMIT applies when a statement carries none; this gatekeeper appends its own LIMIT when one is missing.",
 ];
 
@@ -97,9 +98,17 @@ export async function describeTable(
   return columns;
 }
 
+/** The identifier grammar the gatekeeper can safely embed in SQL, unquoted. */
+const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Whether a name fits the identifier grammar (the non-throwing form). */
+export function isIdentifier(name: string): boolean {
+  return IDENTIFIER_RE.test(name);
+}
+
 /** A conservative SQL identifier: plain [A-Za-z_][A-Za-z0-9_]* only, never quoted. */
 export function identifier(name: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
+  if (!isIdentifier(name))
     throw new Error(`Unsupported identifier: ${JSON.stringify(name)}`);
   return name;
 }

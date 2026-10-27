@@ -44,8 +44,14 @@ jobs:
         run: pnpm --dir cloudflare-os install
       - name: Install this workspace
         run: pnpm install
-      - name: Build configurator frames
-        run: pnpm exec vp run -F @gadgets/gatekeeper-basin build:configurator
+      - name: Build configurator frames (never cached: deploys must never replay a built artifact)
+        run: pnpm exec vp run -F @gadgets/gatekeeper-basin --no-cache build:configurator
+      - name: Assert configurator frames exist and are non-empty
+        run: |
+          shopt -s nullglob
+          frames=(packages/gatekeeper-basin/src/generated/*-configurator-ui.txt)
+          [ ${#frames[@]} -eq 3 ] || { echo "expected 3 configurator frames, found ${#frames[@]}"; exit 1; }
+          for f in "${frames[@]}"; do test -s "$f" || { echo "missing or empty: $f"; exit 1; }; done
       - name: Generate wrangler.jsonc with the upstream generator
         run: node --experimental-strip-types scripts/generate-configs.mjs
       - name: Generate worker types against the real source

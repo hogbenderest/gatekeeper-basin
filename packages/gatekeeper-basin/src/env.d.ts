@@ -38,6 +38,13 @@ declare namespace Cloudflare {
     // ---- Tunables (both modes) ----
     /** Daily scan budget per binding, in MB of compressed bytes scanned. Default 2048. */
     BASIN_DAILY_SCAN_MB?: string;
+    /**
+     * Bytes reserved against the daily budget per billed query before it executes
+     * (reserve-then-settle, bounding concurrent overshoot). Default 10, the
+     * documented per-query minimum scan. A query that scans less than its
+     * reservation keeps the reservation.
+     */
+    BASIN_RESERVE_MB?: string;
     /** Maximum rows returned per query page. Default 500 (the engine caps at its own limit). */
     BASIN_MAX_ROWS?: string;
     /** Query abort timeout in milliseconds. Default 30000. */

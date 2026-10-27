@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  isIdentifier,
   deploymentNotes,
   discoverNamespaces,
   discoverTables,
@@ -47,6 +48,8 @@ describe("identifier", () => {
   it("accepts plain SQL identifiers only", () => {
     expect(identifier("dns_queries")).toBe("dns_queries");
     expect(identifier("_x1")).toBe("_x1");
+    expect(isIdentifier("ok_name")).toBe(true);
+    expect(isIdentifier("has-hyphen")).toBe(false);
     expect(() => identifier("has-hyphen")).toThrow();
     expect(() => identifier("1abc")).toThrow();
     expect(() => identifier('a"b')).toThrow();

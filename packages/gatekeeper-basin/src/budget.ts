@@ -50,10 +50,19 @@ export class Budget {
     this.#now = now;
   }
 
-  /** Throws BudgetExhaustedError when the day's counter is at or over the cap. */
-  async assertAvailable(): Promise<void> {
-    const used = await this.#store.get(budgetDay(this.#now()));
-    if (used >= this.capBytes) throw new BudgetExhaustedError();
+  /**
+   * Claims `estimateBytes` against the day's counter before the outbound query, so
+   * concurrent queries cannot all pass one bare check (audit run 1, finding 1: the DO
+   * input gate opens across the fetch, and assert-then-record let N interleaved
+   * queries each see the same counter). Settles with record(actual - estimate);
+   * record ignores non-positive deltas, so a query that scanned less than its
+   * reservation keeps the reservation - the gatekeeper-x overshoot bound.
+   */
+  async assertAndReserve(estimateBytes: number): Promise<void> {
+    const day = budgetDay(this.#now());
+    const used = await this.#store.get(day);
+    if (used + estimateBytes > this.capBytes) throw new BudgetExhaustedError();
+    await this.#store.add(day, estimateBytes);
   }
 
   /** Record bytes scanned against the day's counter. Never throws. */

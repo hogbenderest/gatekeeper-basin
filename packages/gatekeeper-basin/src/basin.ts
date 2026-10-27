@@ -52,6 +52,7 @@ import {
   discoverTables,
   identifier,
   ingestColumnsPresent,
+  isIdentifier,
   PLATFORM_NOTES,
   type DiscoveredCatalog,
 } from "./catalog.js";
@@ -85,6 +86,9 @@ import BUCKET_CONFIGURATOR_HTML from "./generated/bucket-configurator-ui.txt";
 import NAMESPACE_CONFIGURATOR_HTML from "./generated/namespace-configurator-ui.txt";
 import TABLE_CONFIGURATOR_HTML from "./generated/table-configurator-ui.txt";
 import { obsContext } from "./observability.js";
+import { parseBasinResourceUrl } from "./resource-url.js";
+
+export { parseBasinResourceUrl } from "./resource-url.js";
 
 export const VENDOR_ID = "basin";
 
@@ -143,41 +147,6 @@ function basinResourceUrl(creds: BasinCredentials, scope: BasinScope): string {
   return scopeUrl(scope, creds.accountId, creds.bucket);
 }
 
-/** Parse a basin:// resource URL into its scope, refusing anything else. */
-export function parseBasinResourceUrl(url: string): {
-  accountId: string;
-  bucket: string;
-  scope: BasinScope;
-} {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch (e) {
-    throw new Error(`Invalid Basin URL "${url}"`);
-  }
-  if (parsed.protocol !== "basin:") {
-    throw new Error(`Basin resources use basin:// URLs, not ${parsed.protocol}//`);
-  }
-  const accountId = parsed.hostname;
-  if (!/^[\w-]{6,64}$/.test(accountId)) {
-    throw new Error("The basin:// URL's host must be the Cloudflare account ID.");
-  }
-  const segments = parsed.pathname.split("/").filter(Boolean);
-  if (segments.length === 0 || segments.length > 3) {
-    throw new Error("A basin:// URL is basin://<account>/<bucket>[/<namespace>[/<table>]].");
-  }
-  const bucket = segments[0];
-  if (segments.length === 1) {
-    return { accountId, bucket, scope: { kind: "bucket" } };
-  }
-  const namespace = identifier(segments[1]);
-  if (segments.length === 2) {
-    return { accountId, bucket, scope: { kind: "namespace", namespace } };
-  }
-  const table = identifier(segments[2]);
-  return { accountId, bucket, scope: { kind: "table", namespace, table } };
-}
-
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -193,6 +162,8 @@ interface GatekeeperConfig {
   catalogTtlMs: number;
   describeCap: number;
   scanCapBytes: number;
+  /** Bytes reserved per billed query before execution (the reserve-then-settle bound). */
+  reserveBytes: number;
   notes: string[];
 }
 
@@ -208,6 +179,7 @@ function readConfig(env: Cloudflare.Env): GatekeeperConfig {
     catalogTtlMs: positiveIntVar(env, "BASIN_CATALOG_TTL_MS", DEFAULT_CATALOG_TTL_MS),
     describeCap: positiveIntVar(env, "BASIN_DESCRIBE_CAP", DEFAULT_DESCRIBE_CAP),
     scanCapBytes: budgetCapMb(env.BASIN_DAILY_SCAN_MB) * 1024 * 1024,
+    reserveBytes: positiveIntVar(env, "BASIN_RESERVE_MB", 10) * 1024 * 1024,
     notes: deploymentNotes(env.BASIN_NOTES),
   };
 }
@@ -244,14 +216,19 @@ class CatalogCache {
     return Date.now() - Date.parse(fetchedAt) < this.#ttlMs;
   }
 
-  readCatalog(): DiscoveredCatalog | null {
-    const v = this.#kv.get<DiscoveredCatalog>("catalog");
+  // The cache key is derived from the discovery scope (audit run 1, finding 8):
+  // a single fixed key let whichever scope discovered first after expiry fix
+  // the served catalog for the whole TTL, so a namespace-narrowed enumeration
+  // masqueraded as the bucket-wide view. Components are identifier-validated by
+  // the time discovery runs, so they cannot collide across scopes.
+  readCatalog(scope: BasinScope): DiscoveredCatalog | null {
+    const v = this.#kv.get<DiscoveredCatalog>(catalogCacheKey(scope));
     if (!v || typeof v.fetchedAt !== "string" || !this.#fresh(v.fetchedAt)) return null;
     return v;
   }
 
-  writeCatalog(catalog: DiscoveredCatalog): void {
-    this.#kv.put("catalog", catalog);
+  writeCatalog(scope: BasinScope, catalog: DiscoveredCatalog): void {
+    this.#kv.put(catalogCacheKey(scope), catalog);
   }
 
   readColumns(namespace: string, table: string): { name: string; type: string }[] | null {
@@ -267,31 +244,45 @@ class CatalogCache {
   }
 }
 
+function catalogCacheKey(scope: BasinScope): string {
+  if (scope.kind === "bucket") return "catalog:bucket";
+  if (scope.kind === "namespace") return `catalog:namespace:${scope.namespace}`;
+  return `catalog:table:${scope.namespace}:${scope.table}`;
+}
+
 /**
  * Discover the part of the warehouse this binding may enumerate. Narrow bindings never
  * enumerate beyond their grant: a namespace binding lists only its own namespace, a
  * table binding lists only its own table. Discovery is metadata-only and free.
+ *
+ * Names outside the identifier grammar are skipped, not fatal (audit run 1,
+ * finding 7): one hyphenated table name used to reject getCatalog for the whole
+ * binding and re-poison the cache every TTL. Skipped names are documented in the
+ * catalog's platform notes.
  */
 async function discoverForScope(
   client: BasinSqlClient,
   scope: BasinScope,
   cache: CatalogCache,
 ): Promise<DiscoveredCatalog> {
-  const cached = cache.readCatalog();
+  const cached = cache.readCatalog(scope);
   if (cached) return cached;
   let namespaces: DiscoveredCatalog["namespaces"];
   if (scope.kind === "bucket") {
     namespaces = [];
-    for (const ns of await discoverNamespaces(client)) {
-      namespaces.push({ namespace: ns, tables: await discoverTables(client, ns) });
+    for (const ns of (await discoverNamespaces(client)).filter(isIdentifier)) {
+      namespaces.push({ namespace: ns, tables: (await discoverTables(client, ns)).filter(isIdentifier) });
     }
   } else if (scope.kind === "namespace") {
-    namespaces = [{ namespace: scope.namespace, tables: await discoverTables(client, scope.namespace) }];
+    namespaces = [{
+      namespace: scope.namespace,
+      tables: (await discoverTables(client, scope.namespace)).filter(isIdentifier),
+    }];
   } else {
     namespaces = [{ namespace: scope.namespace, tables: [scope.table] }];
   }
   const fresh: DiscoveredCatalog = { fetchedAt: new Date().toISOString(), namespaces };
-  cache.writeCatalog(fresh);
+  cache.writeCatalog(scope, fresh);
   return fresh;
 }
 
@@ -401,6 +392,9 @@ async function runGoverned(deps: SessionDeps, rawSql: string): Promise<BasinQuer
   // Metadata statements never reach a plan; data statements on narrow bindings do.
   const metadataStatement = subjectKind === "show" || subjectKind === "describe";
   const planCheckNeeded = deps.scope.kind !== "bucket" && !metadataStatement;
+  // Only executed data statements bill a scan; EXPLAIN/SHOW/DESCRIBE are
+  // metadata-only and free, so they reserve nothing.
+  const billed = kind !== "explain" && subjectKind === "data";
 
   if (planCheckNeeded && kind !== "explain" && subjectKind === "data") {
     // Free, engine-resolved scope verification before any billed scan.
@@ -409,20 +403,43 @@ async function runGoverned(deps: SessionDeps, rawSql: string): Promise<BasinQuer
     if (!plan.ok) throw new Error(plan.reason);
   }
 
-  await deps.budget.assertAvailable();
+  await deps.budget.assertAndReserve(billed ? deps.config.reserveBytes : 0);
 
   let result: BasinQueryResponse;
-  if (kind === "explain") {
-    result = await deps.client.runQuery(check.query, { timeoutMs: 15_000 });
-    if (planCheckNeeded) {
-      const plan = checkExplainPlan(explainPlanText(result), deps.scope, { metadataStatement });
-      if (!plan.ok) throw new Error(plan.reason);
+  try {
+    if (kind === "explain") {
+      result = await deps.client.runQuery(check.query, { timeoutMs: 15_000 });
+    } else {
+      result = await deps.client.runQuery(check.query, { timeoutMs: deps.config.timeoutMs });
     }
-  } else {
-    result = await deps.client.runQuery(check.query, { timeoutMs: deps.config.timeoutMs });
+  } catch (e) {
+    // A failed billed query still crossed the engine boundary, and engine error
+    // text can carry warehouse-derived content. Observe the failure (arming the
+    // workspace's restricted mode) before releasing the error to the caller;
+    // a blocked observation propagates and the error does not cross (audit
+    // run 1, finding 4).
+    if (e instanceof BasinSqlError && billed) {
+      await deps.approvalQueue.authorizeObservation({
+        title: "Basin query failed",
+        description:
+          `A governed query over ${scopeLabel(deps.scope)} failed at the engine ` +
+          `(error code ${e.code ?? "unknown"}); engine error text may contain warehouse-derived content.`,
+        containsRestrictedData: true,
+      });
+    }
+    throw e;
+  }
+  if (kind === "explain" && planCheckNeeded) {
+    const plan = checkExplainPlan(explainPlanText(result), deps.scope, { metadataStatement });
+    if (!plan.ok) throw new Error(plan.reason);
   }
 
-  await deps.budget.record(result.metrics.bytesScanned);
+  // Settle the reservation: record the difference between actual and reserved
+  // bytes. record ignores non-positive deltas, so a query that scanned less
+  // than its reservation keeps the reservation (the gatekeeper-x bound).
+  await deps.budget.record(
+    result.metrics.bytesScanned - (billed ? deps.config.reserveBytes : 0),
+  );
 
   const pageSize = deps.config.maxRows;
   const serverCapped = result.totalRows >= maxRowLimit;
@@ -493,6 +510,9 @@ async function buildCatalog(deps: SessionDeps): Promise<BasinCatalog> {
   for (const ns of discovered.namespaces) {
     namespaces.push({ namespace: ns.namespace, tables: ns.tables });
     for (const table of ns.tables) {
+      // Defense in depth: discovery already filters out-of-grammar names, but
+      // the describe loop must never reject the whole catalog over one name.
+      if (!isIdentifier(ns.namespace) || !isIdentifier(table)) continue;
       if (described >= deps.config.describeCap) continue;
       described++;
       const columns = await describeTableCached(deps.client, deps.cache, ns.namespace, table);
@@ -914,7 +934,7 @@ function connectFormHtml(opts: { actionUrl: string; error?: string }): string {
   ${error}
   <form method="post" action="${escapeHtml(opts.actionUrl)}">
     <p><label>Account ID<br>
-      <input type="text" name="accountId" required placeholder="e.g. 48f5cc18f1a716e781d39f1d6777ddc9"
+      <input type="text" name="accountId" required placeholder="your 32-hex account ID, e.g. 023e105f4ecef8ad9ca31a8372d0c353"
         style="width:100%; padding:.4rem;"></label></p>
     <p><label>Bucket (Basin catalog)<br>
       <input type="text" name="bucket" required placeholder="e.g. basin-demo"
@@ -1161,6 +1181,7 @@ export class BasinAccount
   }
 
   async reconnect(): Promise<{ url: string }> {
+    assertBaseUrlConfigured(this.env);
     const nonce = generateNonce();
     await this.#userAccount().prepareReconnect(nonce);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${nonce}` };
@@ -1406,6 +1427,23 @@ function getBaseUrl(env: Cloudflare.Env): string {
   return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/basin");
 }
 
+/**
+ * Refuse to mint bearer connect URLs against the localhost default (audit run 1,
+ * finding 10): the release manifest and the platform's dev-server both set
+ * BASE_URL, so an unset value means an out-of-pipeline deploy whose connect
+ * links would silently point at the user's own loopback. A clear operator error
+ * beats silent breakage.
+ */
+function assertBaseUrlConfigured(env: Cloudflare.Env): void {
+  if (!env.BASE_URL) {
+    throw new Error(
+      "BASE_URL is not configured on this gatekeeper: connect URLs would be minted " +
+        "against localhost. Set BASE_URL to the deployment's public gatekeeper path " +
+        "(e.g. https://<host>/gatekeeper/basin).",
+    );
+  }
+}
+
 function getBasePath(env: Cloudflare.Env): string {
   const path = new URL(getBaseUrl(env)).pathname;
   return path === "/" ? "" : path;
@@ -1452,6 +1490,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
         "This deployment auto-provisions a shared Basin account; individual connections are disabled.",
       );
     }
+    assertBaseUrlConfigured(this.env);
     const userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     const nonce = generateNonce();
     await this.ctx.exports.UserAccount.get(userObjectId).setCallback(callback, nonce);

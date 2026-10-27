@@ -50,8 +50,14 @@ describe("statement allowlist", () => {
     expect(ok("SELECT 'a;b' FROM t")).toBeDefined();
   });
 
-  it("rejects EXPLAIN ANALYZE, which executes the query", () => {
+  it("rejects EXPLAIN ANALYZE in both spellings, which executes the query", () => {
     expect(reject("EXPLAIN ANALYZE SELECT * FROM t")).toBeDefined();
+    // the parenthesized option list (audit run 1, finding 3)
+    expect(reject("EXPLAIN (ANALYZE) SELECT * FROM t")).toBeDefined();
+    expect(reject("EXPLAIN(ANALYZE) SELECT * FROM t")).toBeDefined();
+    // legitimate analyze-prefixed names still pass
+    expect(ok("EXPLAIN SELECT * FROM analyze_sales")).toBeDefined();
+    expect(ok("EXPLAIN WITH analyze_cte AS (SELECT 1 AS a) SELECT a FROM analyze_cte")).toBeDefined();
   });
 
   it("rejects oversized queries", () => {

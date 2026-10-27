@@ -131,10 +131,11 @@ export function sanitizeSql(raw: string): SqlCheck {
     };
   if (SQL_WRITE_KEYWORDS.test(analysis))
     return { ok: false, error: "Write keywords are not allowed." };
-  if (/^explain\s+analyze\b/i.test(head))
+  if (/^explain[\s(]*analyze\b/i.test(head))
     return {
       ok: false,
-      error: "EXPLAIN ANALYZE runs the query; use EXPLAIN for the free plan.",
+      error:
+        "EXPLAIN ANALYZE (including parenthesized option lists) runs the query; use EXPLAIN for the free plan.",
     };
   // Forward the comment-stripped text: the checker and the backend see the same string.
   let q = bare;

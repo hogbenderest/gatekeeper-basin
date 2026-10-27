@@ -37,7 +37,7 @@ describe("parseQueryResponse", () => {
     expect(parsed.totalRows).toBe(1);
   });
 
-  it("maps provider failures to actionable BasinSqlErrors", () => {
+  it("maps provider failures to actionable text without forwarding the raw provider message", () => {
     try {
       parseQueryResponse({
         success: false,
@@ -49,7 +49,8 @@ describe("parseQueryResponse", () => {
       const err = e as BasinSqlError;
       expect(err.code).toBe(40020);
       expect(err.message).toContain("Split multi-table queries");
-      expect(err.providerMessage).toBe("query exceeds manifest limit");
+      expect(err.message).not.toContain("query exceeds manifest limit"); // raw text never crosses
+      expect(err.providerMessage).toBe("query exceeds manifest limit"); // stays for Worker logs
     }
   });
 
@@ -89,8 +90,16 @@ describe("error mapping", () => {
     expect(new BasinSqlError("m", 40020).authFailure).toBe(false);
   });
 
-  it("passes through unknown codes with the provider message", () => {
-    expect(mapProviderError(50000, "boom")).toBe("boom");
+  it("never embeds the raw provider message in agent-facing text", () => {
+    const secret = "cell-value-leak-hunter2";
+    for (const code of [40001, 404, 50000, undefined]) {
+      const message = mapProviderError(code, secret);
+      expect(message).not.toContain(secret);
+    }
+    // The agent still gets actionable, differentiated guidance
+    expect(mapProviderError(40001, "x")).toContain("rejected the query");
+    expect(mapProviderError(404, "x")).toContain("does not exist");
+    expect(mapProviderError(50000, "x")).toContain("code 50000");
     expect(mapProviderError(undefined, "")).toContain("returned an error");
   });
 });
@@ -121,7 +130,7 @@ describe("createBasinSqlClient", () => {
   it("targets the basin-sql REST endpoint with the credential", async () => {
     let seen: { url: string; init: RequestInit } | null = null;
     const client = createBasinSqlClient({
-      accountId: "48f5cc18f1a716e781d39f1d6777ddc9",
+      accountId: "023e105f4ecef8ad9ca31a8372d0c353",
       bucket: "basin-demo",
       token: "secret-token",
     });
@@ -134,7 +143,7 @@ describe("createBasinSqlClient", () => {
       const parsed = await client.runQuery("SELECT 1 FROM t");
       expect(parsed.rows).toHaveLength(1);
       expect(seen!.url).toBe(
-        "https://api.sql.cloudflarestorage.com/api/v1/accounts/48f5cc18f1a716e781d39f1d6777ddc9/basin-sql/query/basin-demo",
+        "https://api.sql.cloudflarestorage.com/api/v1/accounts/023e105f4ecef8ad9ca31a8372d0c353/basin-sql/query/basin-demo",
       );
       const headers = seen!.init.headers as Record<string, string>;
       expect(headers.Authorization).toBe("Bearer secret-token");
