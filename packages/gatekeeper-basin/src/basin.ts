@@ -164,6 +164,8 @@ interface GatekeeperConfig {
   scanCapBytes: number;
   /** Bytes reserved per billed query before execution (the reserve-then-settle bound). */
   reserveBytes: number;
+  /** Hard cap on a single provider response body read (audit run 1, finding 6). */
+  maxResponseBytes: number;
   notes: string[];
 }
 
@@ -180,6 +182,7 @@ function readConfig(env: Cloudflare.Env): GatekeeperConfig {
     describeCap: positiveIntVar(env, "BASIN_DESCRIBE_CAP", DEFAULT_DESCRIBE_CAP),
     scanCapBytes: budgetCapMb(env.BASIN_DAILY_SCAN_MB) * 1024 * 1024,
     reserveBytes: positiveIntVar(env, "BASIN_RESERVE_MB", 10) * 1024 * 1024,
+    maxResponseBytes: positiveIntVar(env, "BASIN_MAX_RESPONSE_MB", 64) * 1024 * 1024,
     notes: deploymentNotes(env.BASIN_NOTES),
   };
 }
@@ -809,7 +812,7 @@ export class BasinGatekeeper
     return new BasinSessionImpl({
       scope: this.ctx.props.scope,
       bucket: creds.bucket,
-      client: createBasinSqlClient(creds),
+      client: createBasinSqlClient(creds, { maxResponseBytes: config.maxResponseBytes }),
       budget: new Budget(kvBudgetStore(this.ctx.storage.kv), config.scanCapBytes),
       config,
       cache: new CatalogCache(this.ctx.storage.kv, config.catalogTtlMs),
@@ -833,8 +836,13 @@ export class BasinGatekeeper
     }
     try {
       const creds = await this.#credentials();
-      const cache = new CatalogCache(this.ctx.storage.kv, readConfig(this.env).catalogTtlMs);
-      const discovered = await discoverForScope(createBasinSqlClient(creds), scope, cache);
+      const config = readConfig(this.env);
+      const cache = new CatalogCache(this.ctx.storage.kv, config.catalogTtlMs);
+      const discovered = await discoverForScope(
+        createBasinSqlClient(creds, { maxResponseBytes: config.maxResponseBytes }),
+        scope,
+        cache,
+      );
       entries = discovered.namespaces.map((ns) => ({
         id: ns.namespace,
         title: ns.namespace,
@@ -1015,7 +1023,9 @@ export class UserAccount extends DurableObject<Cloudflare.Env> {
     // Validate that account + bucket + token can actually query the warehouse.
     const creds: BasinCredentials = { accountId, bucket, token };
     try {
-      await createBasinSqlClient(creds).runQuery("SHOW DATABASES", { timeoutMs: 15_000 });
+      await createBasinSqlClient(creds, {
+        maxResponseBytes: readConfig(this.env).maxResponseBytes,
+      }).runQuery("SHOW DATABASES", { timeoutMs: 15_000 });
     } catch (e) {
       this.#releaseNonceClaim(nonce);
       const msg = e instanceof BasinSqlError ? e.message : `Unable to reach Basin SQL: ${String(e)}`;
@@ -1227,6 +1237,7 @@ class BasinConfiguratorRpcImpl extends RpcTarget {
   }
 
   async listNamespaces(query: string): Promise<{ value: string; title: string; subtitle?: string }[]> {
+    // An RpcTarget without env access: the default response cap applies (64 MB).
     const client = createBasinSqlClient(this.#creds);
     const namespaces = await discoverNamespaces(client);
     const lower = query.toLowerCase();
@@ -1240,6 +1251,7 @@ class BasinConfiguratorRpcImpl extends RpcTarget {
     namespace: string,
     query: string,
   ): Promise<{ value: string; title: string; subtitle?: string }[]> {
+    // An RpcTarget without env access: the default response cap applies (64 MB).
     const client = createBasinSqlClient(this.#creds);
     const tables = await discoverTables(client, identifier(namespace));
     const lower = query.toLowerCase();

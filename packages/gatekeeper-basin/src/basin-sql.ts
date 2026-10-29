@@ -6,6 +6,8 @@
 // The token arrives here only through a BasinCredentials value held by the gatekeeper.
 // It is never logged and never included in an error message.
 
+import { readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+
 export interface BasinCredentials {
   accountId: string;
   bucket: string;
@@ -22,15 +24,29 @@ export interface BasinQueryResponse {
   totalRows: number;
 }
 
-/** A provider failure with the mapped, agent-facing message. */
+/**
+ * A provider failure with the mapped, agent-facing message. `code` stays an own
+ * property (harmless metadata, useful in logs); `providerMessage` must NOT be one:
+ * capnweb's error encoding captures every own enumerable property beyond
+ * name/message/stack and delivers them across the wire, so a plain field would hand
+ * the raw engine text to the agent - the exact channel mapProviderError exists to
+ * close (audit run 1, finding 4). A prototype getter is invisible to that capture
+ * and keeps the text Worker-side.
+ */
 export class BasinSqlError extends Error {
-  constructor(
-    message: string,
-    readonly code?: number,
-    readonly providerMessage?: string,
-  ) {
+  readonly code?: number;
+  readonly #providerMessage: string | undefined;
+
+  constructor(message: string, code?: number, providerMessage?: string) {
     super(message);
     this.name = "BasinSqlError";
+    this.code = code;
+    this.#providerMessage = providerMessage;
+  }
+
+  /** The engine's raw error text, for Worker-side logs only. Never crosses RPC (see the class comment). */
+  get providerMessage(): string | undefined {
+    return this.#providerMessage;
   }
 
   /** True when the credential was rejected (bad or revoked token). */
@@ -85,9 +101,10 @@ function columnType(c: RawColumn): string {
  * Map provider error codes to guidance an agent can act on. The raw provider
  * message is deliberately NOT embedded in the agent-facing text (audit run 1,
  * finding 4): engine error text can carry warehouse-derived content, and it
- * crosses to the caller through the error message. The raw message stays on the
- * BasinSqlError's providerMessage property for Worker-side logs, which do not
- * cross the RPC boundary (capnweb serializes only name/message/stack).
+ * crosses to the caller through the error text - the live probes confirmed the
+ * engine echoes warehouse cell values into cast errors. The raw message stays
+ * readable on BasinSqlError's providerMessage getter for Worker-side logs, which
+ * do not cross the RPC boundary (see the class comment for exactly how).
  */
 export function mapProviderError(code: number | undefined, _message: string): string {
   switch (code) {
@@ -159,10 +176,30 @@ export interface BasinSqlClient {
 }
 
 /**
+ * Default cap for one provider response body read (audit run 1, finding 6): the engine
+ * bounds result pages itself, but the client must never read an unbounded body into
+ * Worker memory. BASIN_MAX_RESPONSE_MB tunes it per deployment; 64 MB leaves generous
+ * room over the largest page the gatekeeper itself will serve. The read itself is the
+ * gatekeeper kit's readTextCapped: the over-cap body is cancelled at the cap, never
+ * buffered.
+ */
+const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
+function humanBytes(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${Math.round(bytes / (1024 * 1024))} MB`
+    : `${Math.round(bytes / 1024)} KB`;
+}
+
+/**
  * A thin client over the Basin SQL REST endpoint. One instance per resolved credential;
  * constructed freely, it holds no state beyond the credential.
  */
-export function createBasinSqlClient(creds: BasinCredentials): BasinSqlClient {
+export function createBasinSqlClient(
+  creds: BasinCredentials,
+  opts?: { maxResponseBytes?: number },
+): BasinSqlClient {
+  const maxResponseBytes = opts?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const url =
     `https://api.sql.cloudflarestorage.com/api/v1/accounts/${encodeURIComponent(creds.accountId)}` +
     `/basin-sql/query/${encodeURIComponent(creds.bucket)}`;
@@ -194,7 +231,20 @@ export function createBasinSqlClient(creds: BasinCredentials): BasinSqlClient {
           resp.status,
         );
       }
-      const bodyText = await resp.text().catch(() => "");
+      // Refuse an oversized body before it lands in Worker memory (finding 6). The
+      // kit's refusal is rewrapped so the agent-facing message stays ours; a
+      // transport failure mid-read degrades to the non-JSON refusal below.
+      let bodyText: string;
+      try {
+        bodyText = await readTextCapped(resp, maxResponseBytes);
+      } catch (e) {
+        if (e instanceof ResponseTooLargeError) {
+          throw new BasinSqlError(
+            `The SQL endpoint response exceeded the ${humanBytes(maxResponseBytes)} read cap.`,
+          );
+        }
+        bodyText = "";
+      }
       let body: unknown;
       try {
         body = JSON.parse(bodyText);

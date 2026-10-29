@@ -110,7 +110,7 @@ describe("Budget reserve-then-settle", () => {
   });
 
   it("ignores zero, negative, and failed recordings", async () => {
-    const { store, map } = memoryStore();
+    const { map } = memoryStore();
     const failing = {
       async get() {
         return 0;

@@ -11,7 +11,7 @@
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
     "types:check": "tsc --noEmit",
-    "test:run": "vitest run"
+    "test:run": "vp run -F @gadgets/gatekeeper-basin build:configurator && vitest run && vitest run -c vitest.worker.config.ts"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "link:../../cloudflare-os/packages/configurator-ui",

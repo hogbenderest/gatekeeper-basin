@@ -1,9 +1,10 @@
 # Upstream proposal: pass the provisioning user's identity to auto-provisioned gatekeeper accounts
 
-Draft issue text for [cloudflare/cloudflare-os](https://github.com/cloudflare/cloudflare-os)
-discussions (their CONTRIBUTING asks for big ideas as discussions first). Review and
-adjust the examples before filing; everything cited below was verified against upstream
-commit `bd10b0e` (2026-10-25).
+**Filed 2026-10-29** as
+[cloudflare/cloudflare-os discussion #900](https://github.com/cloudflare/cloudflare-os/discussions/900)
+(category: Ideas, per their CONTRIBUTING's discussions-first policy). The text below
+is the filed version; everything cited was verified against upstream commit `bd10b0e`
+(2026-10-25).
 
 ---
 

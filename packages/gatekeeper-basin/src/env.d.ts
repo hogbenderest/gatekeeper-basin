@@ -45,6 +45,11 @@ declare namespace Cloudflare {
      * reservation keeps the reservation.
      */
     BASIN_RESERVE_MB?: string;
+    /**
+     * Hard cap on one provider response body read, in MB. Default 64. A larger body
+     * is refused before it lands in Worker memory (audit run 1, finding 6).
+     */
+    BASIN_MAX_RESPONSE_MB?: string;
     /** Maximum rows returned per query page. Default 500 (the engine caps at its own limit). */
     BASIN_MAX_ROWS?: string;
     /** Query abort timeout in milliseconds. Default 30000. */

@@ -69,9 +69,16 @@ ingest semantics.
 - **Audit.** Every data crossing to the agent is an observation in the Workshop's
   approval log: the SQL, the scope, the row count, and the bytes scanned. Failed
   billed queries are observed too (marked restricted), because engine error text can
-  carry warehouse-derived content; and the agent-facing error text itself is
-  sanitized: provider messages never forward verbatim, only the mapped,
-  value-free guidance (the raw text stays in Worker logs, which do not cross RPC).
+  carry warehouse-derived content (the live probes confirmed the engine echoes
+  warehouse cell values into cast errors); and the agent-facing error text itself is
+  sanitized: provider messages never forward verbatim, only the mapped, value-free
+  guidance. The raw text stays readable on `BasinSqlError.providerMessage` for Worker
+  logs - deliberately a prototype getter rather than a field, because capnweb
+  delivers every *own enumerable* property of an error across RPC, and a plain field
+  would hand the raw text to the caller through exactly that side channel.
+- **Bounded reads.** Provider response bodies are read through the gatekeeper kit's
+  capped reader (`BASIN_MAX_RESPONSE_MB`, default 64): an oversized body is cancelled
+  at the cap and refused, never buffered into Worker memory.
 - **Private by default.** Observations are marked `containsRestrictedData`, and the
   observer strategy is A (private-only): a gadget that reads warehouse data cannot be
   shared with anyone. Data cannot leak sideways into a shared workspace's actions or
@@ -118,6 +125,16 @@ curl -s "https://api.sql.cloudflarestorage.com/api/v1/accounts/$ACCOUNT/basin-sq
 
 If either succeeds, your engine accepts writes or stacked statements: do not install
 this token; report the result upstream and re-probe after the platform changes.
+
+`scripts/probe-engine.mjs` automates both mandatory probes and adds the EXPLAIN
+(ANALYZE) and error-echo probes used to settle the audit's conditional findings
+(2026-10-27: the engine refuses EXPLAIN ANALYZE without `lift_query_restrictions`
+and cannot parse the paren forms; error text verifiably echoes cell values):
+
+```sh
+BASIN_SQL_TOKEN=<token> BASIN_ACCOUNT_ID=<account-id> BASIN_BUCKET=<bucket> \
+  node scripts/probe-engine.mjs            # all five; or name specific probes
+```
 
 The passing shape, verified against a live warehouse (2026-10-26): each probe is
 rejected with a **query-level** error (HTTP 400, code 40003) - `"invalid SQL:
@@ -200,6 +217,7 @@ before.
 | `BASE_URL` | unset | The gatekeeper's public path (e.g. `https://<host>/gatekeeper/basin`). Required for per-user connect: the release manifest sets it, and connect flows refuse to mint URLs against the localhost fallback |
 | `BASIN_DAILY_SCAN_MB` | `2048` | per-binding daily scan budget |
 | `BASIN_RESERVE_MB` | `10` | bytes reserved per billed query before execution (reserve-then-settle, bounding concurrent overshoot; a query that scans less keeps its reservation) |
+| `BASIN_MAX_RESPONSE_MB` | `64` | hard cap on one provider response body read; larger bodies are cancelled at the cap and refused |
 | `BASIN_MAX_ROWS` | `500` | rows returned per page |
 | `BASIN_QUERY_TIMEOUT_MS` | `30000` | query abort timeout |
 | `BASIN_CATALOG_TTL_MS` | `3600000` | schema discovery cache TTL (per scope) |
@@ -241,10 +259,17 @@ of upstream `cloudflare-os/` at the root.
 
 ```sh
 bash scripts/dev-setup.sh          # clone upstream at the pinned commit, install, generate
-pnpm test:run                     # pure-logic suites (Node)
+pnpm test:run                     # Node suites + the workerd suite (via vitest.worker.config.ts)
 pnpm types:check                   # tsc against the upstream contracts
 cd packages/gatekeeper-basin && ../../node_modules/.bin/wrangler deploy --dry-run
 ```
+
+The workerd suite (`__tests__/workerd/`) drives the real gatekeeper Durable Object
+through a `TestHooks` facet, exactly as the overseer reaches it, with the Basin SQL
+endpoint faked at the fetch boundary: reserve-then-settle concurrency, failure
+observations, the authoritative plan check, the response cap, and discovery skipping
+out-of-grammar names. A setup file fails the suite unless it is genuinely running in
+workerd.
 
 Deploy with the package's `pnpm deploy` (which regenerates the configurator frames
 uncached first); a plain `wrangler deploy` is not a supported path - it never

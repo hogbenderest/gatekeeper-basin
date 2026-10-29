@@ -230,11 +230,56 @@ error-value echo) which the sanitized error text now bounds either way, and the 
 suite as the next quality milestone - the reservation and failure-observation logic
 added by these fixes is exactly the stateful layer it should cover.
 
-## 11. Open items (pre-existing)
+## 11. Follow-ups landed 2026-10-29 (closing the audit's open items)
 
-- Workerd suite: fake-provider tests for the DOs and sessions (TestHooks harness,
-  the `gatekeeper-cloudflare` pattern), including the full pipeline against mocked
-  EXPLAIN output. The pure-logic suites already pin the security-critical layers.
+- **The two live probes ran** (against `basin-demo`, via the new
+  `scripts/probe-engine.mjs`): the engine refuses `EXPLAIN ANALYZE` without
+  `lift_query_restrictions` (40003) and cannot parse the paren forms at all (40004),
+  so finding 3's execution path does not exist through the governed API - the lexical
+  refusal stands as defense-in-depth. And the error-echo channel is **confirmed**:
+  the engine echoes literals *and real cell values* into cast errors, which makes the
+  finding-4 remediations necessary controls, not precaution. Results recorded in the
+  audit dir (`probe-results.md`).
+- **The response-body cap landed** (finding 6's remaining half): the client reads
+  provider responses through the gatekeeper kit's `readTextCapped` with
+  `BASIN_MAX_RESPONSE_MB` (default 64) - an oversized body is cancelled at the cap,
+  never buffered.
+- **A post-audit finding, caught while verifying the remediation:** capnweb's error
+  encoding delivers every *own enumerable* property of an error across RPC - not just
+  name/message/stack - so `BasinSqlError.providerMessage` as a plain class field would
+  have handed the raw engine text to the agent through exactly the channel
+  `mapProviderError` exists to close. It is now a private field behind a prototype
+  getter, invisible to that capture and Worker-side only. A Node test pins the shape
+  (`Object.keys` must not contain it; `JSON.stringify` must not carry the raw text).
+  `code` stays an own property on purpose: it is harmless metadata the mapped message
+  already carries.
+- **The workerd suite landed** (`__tests__/workerd/`, mirroring upstream gatekeeper-x's
+  harness): a `TestHooks` facet reaching the gatekeeper as the overseer does, a
+  `RecordingQueue` approval queue, and the Basin SQL endpoint faked at the fetch
+  boundary. 17 tests cover the exact stateful layer this run of fixes added:
+  reserve-before-fetch concurrency (three pass a 3 MB cap, the fourth never reaches
+  the engine), settle arithmetic both directions, eviction-restart persistence,
+  failure observations arming the latch before the error is released, blocked
+  observations refusing rows and errors alike, the authoritative plan check (including
+  a decoy plan against a lexically clean query), the lexical EXPLAIN ANALYZE refusal
+  with zero provider calls, the response cap, and out-of-grammar names skipped in
+  discovery. `test:run` now runs both legs; CI inherits it.
+- **The upstream proposal is filed**:
+  [cloudflare/cloudflare-os discussion #900](https://github.com/cloudflare/cloudflare-os/discussions/900)
+  (per their CONTRIBUTING's discussions-first policy), proposing
+  `receivesProvisionedOwner` / `noteProvisionedOwner` so per-user scoped gatekeepers
+  can resolve each ambient singleton's grant.
+
+Remaining accepted residual: the differentiated-mapped-codes existence oracle only.
+Everything else run 1 opened is closed.
+
+## 12. Open items (pre-existing)
+
+- ~~Workerd suite: fake-provider tests for the DOs and sessions~~ - landed 2026-10-29
+  (§11): TestHooks facet harness, the Basin SQL endpoint faked at the fetch boundary,
+  the full pipeline against fake EXPLAIN output. Not yet covered there: the ambient
+  provisioning flow (BasinAutoAccount + owner record + BASIN_USER_SCOPES resolution)
+  and the per-user connect flow; their pure-logic layers are Node-tested.
 - Strategy-B observer probing for per-user mode.
 - Track the Basin SQL beta: when read-only queries stop requiring R2 Storage Admin
   R&W (or accept bucket-scoped read tokens), the token recipe narrows and this

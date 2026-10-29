@@ -163,4 +163,42 @@ describe("createBasinSqlClient", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("refuses a provider response body over the cap before it lands in memory", async () => {
+    const client = createBasinSqlClient(
+      { accountId: "a".repeat(32), bucket: "b", token: "secret-token" },
+      { maxResponseBytes: 1024 },
+    );
+    const originalFetch = globalThis.fetch;
+    // No content-length (chunked): the cap must trip on the streamed chunks themselves.
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"success":true,'));
+            c.enqueue(new TextEncoder().encode("x".repeat(4096)));
+            c.close();
+          },
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+    try {
+      await expect(client.runQuery("SELECT 1 FROM t")).rejects.toThrow(/read cap/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("BasinSqlError shape", () => {
+  it("keeps the raw provider text off the own enumerable properties, which capnweb sends across RPC", () => {
+    const raw = "Cannot cast string 'did:plc:xyz' to value of Int64 type";
+    const err = new BasinSqlError("mapped message", 40004, raw);
+    expect(err.providerMessage).toBe(raw); // Worker-side logs still see it
+    expect(err.code).toBe(40004);
+    expect(err.message).toBe("mapped message");
+    expect(Object.keys(err)).toContain("code"); // harmless metadata may cross
+    expect(Object.keys(err)).not.toContain("providerMessage"); // the raw text must not
+    expect(JSON.stringify(err)).not.toContain("did:plc");
+  });
 });
