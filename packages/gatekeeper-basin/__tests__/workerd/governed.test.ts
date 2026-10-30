@@ -89,4 +89,24 @@ describe("governed queries", () => {
     expect(homelab!.tables).toContain("syslog_events");
     expect(homelab!.tables).not.toContain("2026-events");
   });
+
+  it("getNamespace's narrow discovery never poisons the session catalog: the cache is scope-keyed (audit finding 8)", async () => {
+    const basin = new FakeBasinSql().install();
+    basin.namespaces.push({
+      namespace: "netflow",
+      tables: [{ table: "flows", columns: [{ name: "event_id", type: "Utf8" }] }],
+    });
+    const { name, props } = bucketProps();
+    // A narrow discovery first: pre-fix it cached under one scope-blind key.
+    const ns = unwrap(await hooks().run(name, props, [["getNamespace", "homelab"], ["describe"]])) as {
+      namespace: string;
+      tables: string[];
+    };
+    expect(ns.tables).toContain("dns_queries");
+    // The bucket-wide catalog must still see every namespace, not the narrow view.
+    const catalog = unwrap(await hooks().run(name, props, [["getCatalog"]])) as {
+      namespaces: { namespace: string; tables: string[] }[];
+    };
+    expect(catalog.namespaces.map((n) => n.namespace).sort()).toEqual(["homelab", "netflow"]);
+  });
 });
